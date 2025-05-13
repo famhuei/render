@@ -6,6 +6,11 @@ import torch
 from transformers import BlipProcessor, BlipForConditionalGeneration, DetrImageProcessor, DetrForObjectDetection
 import gc
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Image Analysis API")
 
@@ -20,7 +25,7 @@ app.add_middleware(
 
 # Initialize models with device configuration
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device: {device}")
+logger.info(f"Using device: {device}")
 
 # Global variables for models
 processor = None
@@ -31,12 +36,12 @@ detr_model = None
 def load_models():
     global processor, model, detr_processor, detr_model
     try:
-        print("Loading BLIP model...")
+        logger.info("Loading BLIP model...")
         processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache")
         model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache").to(device)
         model.eval()
 
-        print("Loading DETR model...")
+        logger.info("Loading DETR model...")
         detr_processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache")
         detr_model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache").to(device)
         detr_model.eval()
@@ -45,14 +50,16 @@ def load_models():
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
-        print("Models loaded successfully!")
+        logger.info("Models loaded successfully!")
     except Exception as e:
-        print(f"Error loading models: {str(e)}")
+        logger.error(f"Error loading models: {str(e)}")
         raise
 
 @app.on_event("startup")
 async def startup_event():
+    logger.info("Starting up application...")
     load_models()
+    logger.info("Application startup complete!")
 
 def process_prompt(prompt: str) -> str:
     if not prompt:
@@ -140,7 +147,7 @@ async def detect_objects(
         }
         
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logger.error(f"Error processing request: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
@@ -151,7 +158,8 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
+# This is for local development only
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

@@ -27,5 +27,5 @@ COPY . .
 # Expose the port explicitly
 EXPOSE 10000
 
-# Use uvicorn directly with optimized settings
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "10000", "--workers", "1", "--limit-concurrency", "1", "--timeout-keep-alive", "30"]
+# Use gunicorn with uvicorn worker
+CMD gunicorn api_server:app --bind 0.0.0.0:10000 --worker-class uvicorn.workers.UvicornWorker --workers 1 --timeout 120 --keep-alive 5 --log-level info
