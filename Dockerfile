@@ -6,7 +6,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV TRANSFORMERS_CACHE=/app/cache
 ENV TORCH_HOME=/app/cache
-ENV PORT=10000
+ENV PORT=8080
 ENV PYTHONPATH=/app
 
 # Install system dependencies
@@ -25,7 +25,7 @@ RUN mkdir -p /app/cache
 COPY . .
 
 # Expose the port explicitly
-EXPOSE 10000
+EXPOSE 8080
 
 # Use gunicorn with uvicorn worker
-CMD gunicorn api_server:app --bind 0.0.0.0:10000 --worker-class uvicorn.workers.UvicornWorker --workers 1 --timeout 120 --keep-alive 5 --log-level info
+CMD exec gunicorn api_server:app --bind 0.0.0.0:8080 --worker-class uvicorn.workers.UvicornWorker --workers 1 --timeout 120 --keep-alive 5 --log-level info
