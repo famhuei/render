@@ -7,7 +7,7 @@ from transformers import BlipProcessor, BlipForConditionalGeneration, DetrImageP
 import gc
 import os
 
-app = FastAPI()
+app = FastAPI(title="Image Analysis API")
 
 # Configure CORS
 app.add_middleware(
@@ -24,10 +24,12 @@ print(f"Using device: {device}")
 
 # Load models with memory optimization
 try:
+    print("Loading BLIP model...")
     processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache")
     model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache").to(device)
     model.eval()  # Set to evaluation mode
 
+    print("Loading DETR model...")
     detr_processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache")
     detr_model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache").to(device)
     detr_model.eval()  # Set to evaluation mode
@@ -36,6 +38,7 @@ try:
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    print("Models loaded successfully!")
 except Exception as e:
     print(f"Error loading models: {str(e)}")
     raise
@@ -127,10 +130,15 @@ async def detect_objects(
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/")
+async def root():
+    return {"message": "Image Analysis API is running"}
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
+# This is for local development only
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
