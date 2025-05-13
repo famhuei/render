@@ -1,51 +1,50 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
 from PIL import Image
 import io
 import torch
-from transformers import BlipProcessor, BlipForConditionalGeneration, pipeline
-import base64
+from transformers import BlipProcessor, BlipForConditionalGeneration, DetrImageProcessor, DetrForObjectDetection
+import gc
 
 app = FastAPI()
 
-# Enable CORS with more specific settings
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-    expose_headers=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Load model and processor for better image understanding
-model_name = "Salesforce/blip-image-captioning-base"
-processor = BlipProcessor.from_pretrained(model_name)
-model = BlipForConditionalGeneration.from_pretrained(model_name)
+# Initialize models with device configuration
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 
-# Load object detection model
-object_detector = pipeline("object-detection", model="facebook/detr-resnet-50")
+# Load models with memory optimization
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
 
-class CoordinatesModel(BaseModel):
-    response: str = None
-    error: str = None
+detr_processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
+detr_model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50").to(device)
 
 def process_prompt(prompt: str) -> str:
-    """Process the user prompt to get better results"""
+    if not prompt:
+        return "describe what you see in this image"
+    
     prompt = prompt.lower()
-    if "what is this" in prompt or "what do you see" in prompt:
-        return "Describe this object in detail"
-    elif "describe" in prompt:
-        return "Describe this object in detail"
-    return prompt
+    if "what" in prompt and "this" in prompt:
+        return prompt
+    elif "what" in prompt:
+        return f"what is this {prompt.replace('what', '').strip()}"
+    else:
+        return f"describe this {prompt}"
 
 @app.post("/api/detect")
 async def detect_objects(
-    prompt: str = Form(...),
-    width: str = Form(...),
-    height: str = Form(...),
+    prompt: str = Form(None),
+    width: int = Form(...),
+    height: int = Form(...),
     image: UploadFile = File(...)
 ):
     try:
@@ -53,34 +52,54 @@ async def detect_objects(
         contents = await image.read()
         image = Image.open(io.BytesIO(contents))
         
-        # First detect objects in the image
-        detections = object_detector(image)
-        detected_objects = [det['label'] for det in detections]
+        # Object detection
+        inputs = detr_processor(images=image, return_tensors="pt").to(device)
+        outputs = detr_model(**inputs)
         
-        # Process the prompt
+        # Convert outputs to COCO API
+        target_sizes = torch.tensor([image.size[::-1]])
+        results = detr_processor.post_process_object_detection(outputs, target_sizes=target_sizes, threshold=0.9)[0]
+        
+        detected_objects = []
+        for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+            detected_objects.append({
+                "label": detr_model.config.id2label[label.item()],
+                "score": score.item(),
+                "box": box.tolist()
+            })
+        
+        # Clear CUDA cache if using GPU
+        if device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        # Process prompt
         processed_prompt = process_prompt(prompt)
         
         # Generate caption
-        inputs = processor(image, text=processed_prompt, return_tensors="pt")
-        generated_ids = model.generate(
+        inputs = processor(image, processed_prompt, return_tensors="pt").to(device)
+        outputs = model.generate(
             **inputs,
             max_length=50,
             num_beams=5,
-            temperature=0.7
+            temperature=0.7,
+            do_sample=True
         )
-        caption = processor.decode(generated_ids[0], skip_special_tokens=True)
+        caption = processor.decode(outputs[0], skip_special_tokens=True)
         
-        # Combine object detection with caption
-        if detected_objects:
-            response = f"I can see {', '.join(detected_objects)}. {caption}"
-        else:
-            response = caption
-            
-        return CoordinatesModel(response=response)
+        # Clear memory again
+        if device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        return {
+            "message": f"Detected objects: {', '.join(obj['label'] for obj in detected_objects)}. {caption}"
+        }
+        
     except Exception as e:
-        print(f"Error processing request: {str(e)}")
-        return CoordinatesModel(error=str(e))
+        print(f"Error: {str(e)}")
+        return {"error": str(e)}
 
 if __name__ == "__main__":
-    # Use 0.0.0.0 to allow external connections
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info") 
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
