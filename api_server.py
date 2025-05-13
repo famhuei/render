@@ -22,26 +22,37 @@ app.add_middleware(
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
-# Load models with memory optimization
-try:
-    print("Loading BLIP model...")
-    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache")
-    model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache").to(device)
-    model.eval()  # Set to evaluation mode
+# Global variables for models
+processor = None
+model = None
+detr_processor = None
+detr_model = None
 
-    print("Loading DETR model...")
-    detr_processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache")
-    detr_model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache").to(device)
-    detr_model.eval()  # Set to evaluation mode
+def load_models():
+    global processor, model, detr_processor, detr_model
+    try:
+        print("Loading BLIP model...")
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", cache_dir="/app/cache").to(device)
+        model.eval()
 
-    # Free up memory
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
-    print("Models loaded successfully!")
-except Exception as e:
-    print(f"Error loading models: {str(e)}")
-    raise
+        print("Loading DETR model...")
+        detr_processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache")
+        detr_model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50", cache_dir="/app/cache").to(device)
+        detr_model.eval()
+
+        # Free up memory
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        print("Models loaded successfully!")
+    except Exception as e:
+        print(f"Error loading models: {str(e)}")
+        raise
+
+@app.on_event("startup")
+async def startup_event():
+    load_models()
 
 def process_prompt(prompt: str) -> str:
     if not prompt:
@@ -63,6 +74,9 @@ async def detect_objects(
     image: UploadFile = File(...)
 ):
     try:
+        if processor is None or model is None or detr_processor is None or detr_model is None:
+            load_models()
+
         # Read and process image
         contents = await image.read()
         if len(contents) > 10 * 1024 * 1024:  # 10MB limit
@@ -78,17 +92,16 @@ async def detect_objects(
             image = image.resize(new_size, Image.Resampling.LANCZOS)
         
         # Object detection
-        with torch.no_grad():  # Disable gradient calculation
+        with torch.no_grad():
             inputs = detr_processor(images=image, return_tensors="pt").to(device)
             outputs = detr_model(**inputs)
             
-            # Convert outputs to COCO API
             target_sizes = torch.tensor([image.size[::-1]])
             results = detr_processor.post_process_object_detection(outputs, target_sizes=target_sizes, threshold=0.9)[0]
             
             detected_objects = []
             for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-                if score > 0.9:  # Only include high confidence detections
+                if score > 0.9:
                     detected_objects.append({
                         "label": detr_model.config.id2label[label.item()],
                         "score": score.item(),
@@ -105,7 +118,7 @@ async def detect_objects(
         processed_prompt = process_prompt(prompt)
         
         # Generate caption
-        with torch.no_grad():  # Disable gradient calculation
+        with torch.no_grad():
             inputs = processor(image, processed_prompt, return_tensors="pt").to(device)
             outputs = model.generate(
                 **inputs,
@@ -138,7 +151,6 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-# This is for local development only
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
