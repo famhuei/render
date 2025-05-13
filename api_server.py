@@ -158,7 +158,6 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-# This is for local development only
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
